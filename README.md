@@ -21,12 +21,13 @@
    python3 export_tokenizer.py
    ```
 
-第2,3步将在仓库目录下创建models文件夹，并获取models/gpt2_124M.bin及models/gpt2_ranks.bin，由于模型过大，无法像darknetz一样放入out-br/target/root，我们将模型文件放入宿主机与qemu的共享目录，并挂载到虚拟机。
+第2,3步将在仓库目录下创建models文件夹，并下载models/gpt2_124M.bin及导出models/gpt2_ranks.bin，由于模型过大（约500MB），无法像darknetz一样放入out-br/target/root，我们将模型文件放入宿主机与qemu的共享目录，并挂载到虚拟机。
 
 >[!WARNING]
->若后续转移到开发板，需要额外注意该点！
+>若后续转移到开发板，需要额外注意文件大小这一点！
 
 4. 挂载共享目录
+
    修改`optee/build/common.mk`
    ```
    #在原先的QEMU_EXTRA_ARGS下新增一段参数
@@ -37,7 +38,7 @@
    QEMU_EXTRA_ARGS += -fsdev local,id=fsdev0,path=/home/internetsb/optee/build/shared_dir,security_model=none \
                      -device virtio-9p-device,fsdev=fsdev0,mount_tag=host_share
    ```
-   `path=./shared_dir`，这是宿主机上的目录（需要手动创建：mkdir optee/build/shared_dir）。
+   `path=./shared_dir`，这是宿主机上的目录（需要手动创建：`mkdir optee/build/shared_dir`）。
    `mount_tag=host_share`，这是共享目录的标签。
 
 5. 编译启动op-tee
@@ -63,6 +64,7 @@
   Text to complete: Ladies and
 
   Generated:  Gentlemen, this year's NBA playoffs have never been about making your living from Twitter. But this year is about living with it. We
+  ......
   ```
 
   可喜可贺，可喜可贺。
