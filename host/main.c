@@ -24,10 +24,9 @@
 /* 获取UUID */
 #include <gpt_ta.h>
 // ----------------------------------------------------------------------------
-// BPE tokenizer 结构和函数 (from cchat.c)
-
-#define HASH_SIZE 131072   // 2^17, must be larger than vocabulary size
-#define MAX_TOKENS 2048    // maximum number of tokens we handle
+// BPE tokenizer 结构和函数
+#define HASH_SIZE 131072   // 2^17, 必须比词表大小大
+#define MAX_TOKENS 2048    // 我们处理token的最大长度
 
 /**
  * @struct RankItem
@@ -155,7 +154,7 @@ int bpe_encode(const char* text, int* out_tokens) {
 
         if (best_idx == -1) break;
 
-        // Merge the best pair
+        // 合并
         int new_len = tokens[best_idx].len + tokens[best_idx+1].len;
         unsigned char* new_data = malloc(new_len);
         memcpy(new_data, tokens[best_idx].bytes, tokens[best_idx].len);
@@ -166,7 +165,7 @@ int bpe_encode(const char* text, int* out_tokens) {
         tokens[best_idx].bytes = new_data;
         tokens[best_idx].len = new_len;
 
-        // Shift remaining tokens left
+        // 左移其余token
         for (int i = best_idx + 1; i < current_count - 1; i++) {
             tokens[i] = tokens[i+1];
         }
@@ -182,11 +181,10 @@ int bpe_encode(const char* text, int* out_tokens) {
 }
 
 // ----------------------------------------------------------------------------
-// GPT-2 model definition and forward passes
-// All tensor shapes are documented in the original code.
+// GPT-2 模型定义及前向传播
 
 /**
- * @brief 编码器：token嵌入 + 位置嵌入
+ * @brief 编码器前向传播：token嵌入 + 位置嵌入
  * @param[out] out 输出张量，形状为(B, T, C)
  * @param inp 输入token IDs，形状为(B, T)
  * @param wte token嵌入权重，形状为(V, C)
@@ -251,7 +249,7 @@ void layernorm_forward(float* out, float* mean, float* rstd,
     }
 }
 
-// Thread argument structure for matmul_forward
+// matmul_forward 的线程参数结构
 /**
  * @struct MatmulThreadArgs
  * @brief 矩阵乘法多线程计算参数结构体
@@ -386,7 +384,7 @@ void attention_forward(float* out, float* preatt, float* att,
                 float* preatt_bth = preatt + b*NH*T*T + h*T*T + t*T;
                 float* att_bth = att + b*NH*T*T + h*T*T + t*T;
 
-                // pass 1: calculate query dot key and maxval
+                // 1: 计算query点乘key，和maxval
                 float maxval = -10000.0f;
                 for (int t2 = 0; t2 <= t; t2++) {
                     float* key_t2 = inp + b * T * C3 + t2 * C3 + h * hs + C;
@@ -399,7 +397,7 @@ void attention_forward(float* out, float* preatt, float* att,
                     preatt_bth[t2] = val;
                 }
 
-                // pass 2: exponentiate and sum
+                // 2： 幂和
                 float expsum = 0.0f;
                 for (int t2 = 0; t2 <= t; t2++) {
                     float expv = expf(preatt_bth[t2] - maxval);
@@ -408,7 +406,7 @@ void attention_forward(float* out, float* preatt, float* att,
                 }
                 float expsum_inv = expsum == 0.0f ? 0.0f : 1.0f / expsum;
 
-                // pass 3: softmax
+                // 3: softmax
                 for (int t2 = 0; t2 < T; t2++) {
                     if (t2 <= t) {
                         att_bth[t2] *= expsum_inv;
@@ -417,7 +415,7 @@ void attention_forward(float* out, float* preatt, float* att,
                     }
                 }
 
-                // pass 4: weighted sum of values
+                // 4: values 的加权和
                 float* out_bth = out + b * T * C + t * C + h * hs;
                 for (int i = 0; i < hs; i++) out_bth[i] = 0.0f;
                 for (int t2 = 0; t2 <= t; t2++) {
@@ -495,7 +493,7 @@ void softmax_forward(float* probs, float* logits, int B, int T, int V) {
 }
 
 // ----------------------------------------------------------------------------
-// GPT-2 model structure (from gpt.c)
+// GPT-2 模型结构
 
 #define NUM_PARAMETER_TENSORS 16
 /**
@@ -992,7 +990,7 @@ void gpt2_free(GPT2 *model) {
 }
 
 // ----------------------------------------------------------------------------
-// Sampling helper (with randomness)
+// 随机采样函数
 
 /**
  * @brief 根据概率分布采样
@@ -1001,8 +999,7 @@ void gpt2_free(GPT2 *model) {
  * @return 返回采样的索引
  */
 int sample_mult(float* probabilities, int n) {
-    // Generate a random float in [0,1)
-    float coin = 0.5;  // 固定值
+    float coin = 0.5;  // 固定值，可修改为随机值
     float cdf = 0.0f;
     for (int i = 0; i < n; i++) {
         cdf += probabilities[i];
@@ -1016,9 +1013,10 @@ int sample_mult(float* probabilities, int n) {
 #define GPT2_EOT 50256
 
 // ----------------------------------------------------------------------------
-// Main interactive chat program
+// 主交互程序
 
 int main(int argc, char *argv[]) {
+    // 暂时忽略TA，采用hello_world_ta占位
     TEEC_Result res;
 	TEEC_Context ctx;
 	TEEC_Session sess;
@@ -1136,24 +1134,24 @@ int main(int argc, char *argv[]) {
     // 循环
     int current_len = num_input_tokens;
     int max_gen = 200;                         // 最大生成token数
-    int max_total = model.config.max_seq_len;   // hard limit from positional embeddings
+    int max_total = model.config.max_seq_len;   // 位置嵌入的极限
 
     while (current_len < max_total && current_len - num_input_tokens < max_gen) {
-        // Run forward pass on current sequence
+        // 以当前token序列前向传播
         gpt2_forward(&model, tokens, 1, current_len);
 
-        // Get probabilities for the last position
+        // 获取概率
         float* probs = model.acts.probs + (current_len - 1) * model.config.vocab_size;
 
-        // Sample next token
+        // 采样
         int next_token = sample_mult(probs, model.config.vocab_size);
 
-        // Append to tokens array
+        // 添加到token数组
         tokens[current_len] = next_token;
         current_len++;
 
-        // Decode and print the token
-        // Linear search in hash_table for the rank (could be optimised with reverse map)
+        // 解码并输出
+        // 线性查找（可优化）
         int found = 0;
         for (int i = 0; i < HASH_SIZE; i++) {
             if (hash_table[i] && hash_table[i]->rank == next_token) {
@@ -1164,17 +1162,17 @@ int main(int argc, char *argv[]) {
             }
         }
         if (!found) {
-            // If token not found in vocabulary (should not happen), print its id in brackets
+            // 如果token在词表中找不到 (不应发生), 打印id
             printf("[%d]", next_token);
             fflush(stdout);
         }
 
-        // Stop if end-of-text token
+        // 遇到结束token停止
         if (next_token == GPT2_EOT) break;
     }
     printf("\n");
 
-    // Cleanup
+    // 清理资源
     gpt2_free(&model);
     for (int i = 0; i < HASH_SIZE; i++) {
         if (hash_table[i]) {
