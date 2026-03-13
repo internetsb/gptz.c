@@ -34,12 +34,15 @@
    QEMU_EXTRA_ARGS +=\
 	-object rng-random,filename=/dev/urandom,id=rng0 \
 	-device virtio-rng-pci,rng=rng0,max-bytes=1024,period=1000
-   # 以下为新增参数
+   # 以下为新增参数，替换成你的真实路径
    QEMU_EXTRA_ARGS += -fsdev local,id=fsdev0,path=/home/internetsb/optee/build/shared_dir,security_model=none \
                      -device virtio-9p-device,fsdev=fsdev0,mount_tag=host_share
    ```
-   `path=./shared_dir`，这是宿主机上的目录（需要手动创建：`mkdir optee/build/shared_dir`）。
+   `path=/home/internetsb/optee/build/shared_dir`，这是我宿主机上的目录（需要手动创建shared_dir并替换为你的真实路径）。
+
    `mount_tag=host_share`，这是共享目录的标签。
+
+   然后将第2，3步下载的模型文件复制到共享目录下
 
 5. 编译启动op-tee
   ```bash
