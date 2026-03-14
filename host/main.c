@@ -218,6 +218,37 @@ void encoder_forward(float* out,
     }
 }
 
+void layernorm_forward_CA(float* inp, int B, int T, int C) {
+    TEEC_Operation op = {0};
+    uint32_t err_origin;
+    TEEC_Result res;
+
+    op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_TEMP_INPUT, TEEC_VALUE_INPUT, TEEC_VALUE_INPUT, TEEC_NONE);
+    op.params[0].tmpref.buffer = inp;
+    op.params[0].tmpref.size = B * T * C * sizeof(float);
+    op.params[1].value.a = B;
+    op.params[1].value.b = T;
+    op.params[2].value.a = C;
+    res = TEEC_InvokeCommand(&sess, TA_GPT_CMD_LAYERNORM_FORWARD, &op, &err_origin);
+    if (res != TEEC_SUCCESS) {
+        errx(1, "TEE_InvokeCommand failed with code 0x%x origin 0x%x", res, err_origin);
+    }
+}
+
+void layernorm_output_CA(float* out, int B, int T, int C) {
+    TEEC_Operation op = {0};
+    uint32_t err_origin;
+    TEEC_Result res;
+
+    op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_TEMP_OUTPUT, TEEC_NONE, TEEC_NONE, TEEC_NONE);
+    op.params[0].tmpref.buffer = out;
+    op.params[0].tmpref.size = B * T * C * sizeof(float);
+    res = TEEC_InvokeCommand(&sess, TA_GPT_CMD_LAYERNORM_OUTPUT, &op, &err_origin);
+    if (res != TEEC_SUCCESS) {
+        errx(1, "TEE_InvokeCommand failed with code 0x%x origin 0x%x", res, err_origin);
+    }
+}
+
 /**
  * @brief 层归一化前向传播
  * @param[out] out 输出张量，形状为(B, T, C)
@@ -560,6 +591,11 @@ float* malloc_and_point_parameters(ParameterTensors* params, size_t* param_sizes
             params_memory_iterator += param_sizes[i];
             continue; // 下一个参数继续分配内存
         }
+        if (trusted_layer == 2 && (i == 14 || i == 15)){
+            *(ptrs[i]) = NULL; // 将lnfw和lnfb的指针设置为NULL，表示它们将在TEE中加载和计算
+            params_memory_iterator += param_sizes[i];
+            continue;
+        }
         *(ptrs[i]) = params_memory_iterator;    // 将相应参数内存指针指向当前位置
         params_memory_iterator += param_sizes[i];
     }
@@ -594,33 +630,83 @@ float* malloc_and_point_activations(ActivationTensors* acts, size_t* act_sizes) 
     return acts_memory;
 }
 
-void load_parameters_CA(GPT2 *model, FILE *model_file) { 
-    // 读入wte和wpe参数数据到缓冲区，准备发送到TEE中
-    int buffer_size = model->param_sizes[0] + model->param_sizes[1]; // wte和wpe的总大小
-    float* buffer = (float*)malloc(buffer_size * sizeof(float));
-    if (fread(buffer, sizeof(float), buffer_size, model_file) != (size_t)buffer_size) {
-        printf("Error: could not read wte and wpe parameters from file\n");
-        fclose(model_file);
-        free(buffer);
-        exit(1);
-    }
-    printf("Ready to load parameters into TEE...\n");
-    // TA函数调用
-    TEEC_Operation op;
+#define CHUNK_SIZE (1024 * 1024) // 每次 1MB
+
+void load_parameters_CA(GPT2 *model, FILE *model_file) {
+    int wte_elements = model->param_sizes[0];
+    int wpe_elements = model->param_sizes[1];
+    size_t total_bytes = (wte_elements + wpe_elements) * sizeof(float);
+    
+    TEEC_Operation op = {0};
     uint32_t err_origin;
     TEEC_Result res;
-    // 参数：模型参数内存块指针，wte和wpe大小
-    memset(&op, 0, sizeof(op));
-    op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_TEMP_INPUT, TEEC_VALUE_INPUT, TEEC_NONE, TEEC_NONE);
-    op.params[0].tmpref.buffer = buffer;
-    op.params[0].tmpref.size = (int)(buffer_size * sizeof(float));
-    op.params[1].value.a = (int)model->param_sizes[0]; // wte大小
-    op.params[1].value.b = (int)model->param_sizes[1]; // wpe大小
 
+    // --- 第一步：初始化分配 ---
+    op.paramTypes = TEEC_PARAM_TYPES(TEEC_VALUE_INPUT, TEEC_VALUE_INPUT, TEEC_NONE, TEEC_NONE);
+    op.params[0].value.a = (uint32_t)total_bytes;
+    op.params[0].value.b = (uint32_t)wte_elements;
+    
     res = TEEC_InvokeCommand(&sess, TA_GPT_CMD_LOAD_PARAMS, &op, &err_origin);
     if (res != TEEC_SUCCESS) {
-        errx(1, "TEE_InvokeCommand failed with code 0x%x origin 0x%x", res, err_origin);
+        errx(1, "Init alloc failed: 0x%x origin 0x%x", res, err_origin);
     }
+
+    // --- 第二步：分块读取并发送 ---
+    float* chunk_buffer = (float*)malloc(CHUNK_SIZE);
+    size_t bytes_sent = 0;
+
+    while (bytes_sent < total_bytes) {
+        size_t remaining = total_bytes - bytes_sent;
+        size_t current_chunk_size = (remaining > CHUNK_SIZE) ? CHUNK_SIZE : remaining;
+
+        if (fread(chunk_buffer, 1, current_chunk_size, model_file) != current_chunk_size) {
+            errx(1, "Read file error");
+        }
+
+        memset(&op, 0, sizeof(op));
+        op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_TEMP_INPUT, TEEC_VALUE_INPUT, TEEC_NONE, TEEC_NONE);
+        op.params[0].tmpref.buffer = chunk_buffer;
+        op.params[0].tmpref.size = current_chunk_size;
+        op.params[1].value.a = (uint32_t)bytes_sent; // 告诉 TA 现在的写入位置
+
+        res = TEEC_InvokeCommand(&sess, TA_GPT_CMD_LOAD_PARAMS, &op, &err_origin);
+        if (res != TEEC_SUCCESS) {
+            errx(1, "Chunk load failed at %zu: 0x%x", bytes_sent, res);
+        }
+        
+        bytes_sent += current_chunk_size;
+        printf("Uploading parameters: %.1f%%\r", (float)bytes_sent / total_bytes * 100);
+        fflush(stdout);
+    }
+    printf("\nDone.\n");
+    free(chunk_buffer);
+}
+
+void load_lnfwb_CA(GPT2 *model, FILE *model_file) { 
+    int lnfw_elements = model->param_sizes[14];
+    int lnfb_elements = model->param_sizes[15];
+    float *lnfw_buffer = (float *)malloc(lnfw_elements * sizeof(float));
+    float *lnfb_buffer = (float *)malloc(lnfb_elements * sizeof(float));
+    fread(lnfw_buffer, sizeof(float), lnfw_elements, model_file);
+    fread(lnfb_buffer, sizeof(float), lnfb_elements, model_file);
+
+    TEEC_Operation op;
+    TEEC_Result res;
+    uint32_t err_origin;
+
+    op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_TEMP_INPUT, TEEC_MEMREF_TEMP_INPUT, TEEC_NONE, TEEC_NONE);
+    op.params[0].tmpref.buffer = lnfw_buffer;
+    op.params[0].tmpref.size = lnfw_elements * sizeof(float);
+    op.params[1].tmpref.buffer = lnfb_buffer;
+    op.params[1].tmpref.size = lnfb_elements * sizeof(float);
+
+    res = TEEC_InvokeCommand(&sess, TA_GPT_CMD_LOAD_LNFWB, &op, &err_origin);
+    if (res != TEEC_SUCCESS)
+        errx(1, "TEEC_InvokeCommand failed with code 0x%x origin 0x%x",
+            res, err_origin);
+
+    free(lnfw_buffer);
+    free(lnfb_buffer);
 }
 
 
@@ -642,6 +728,14 @@ void load_parameters(GPT2 *model, FILE *model_file, int trusted_layer) {
             params_memory_iterator += model->param_sizes[0] + model->param_sizes[1]; // 跳过这部分内存
             i = 1; // 跳过wpe的索引，因为它已经在load_parameters_CA中加载了
             continue; // 下一个参数继续加载
+        }
+        if (trusted_layer == 2 && (i == 14)) {
+            // 如果当前参数是lnfw或lnfb，并且可信标志为2，加载入TEE中
+            load_lnfwb_CA(model, model_file); // 连续加载lnfw和lnfb，将参数加载到TEE中
+            printf("Loaded parameters into TEE...\n");
+            params_memory_iterator += model->param_sizes[14] + model->param_sizes[15]; // 跳过这部分内存
+            i = 15;
+            continue;
         }
         if (fread(params_memory_iterator, sizeof(float), model->param_sizes[i], model_file) != model->param_sizes[i]) {
             printf("Error: could not read parameter %zu from file\n", i);
@@ -713,6 +807,7 @@ void gpt2_build_from_checkpoint(GPT2 *model, const char* checkpoint_path, int tr
     size_t num_parameters = 0;
     for (size_t i = 0; i < NUM_PARAMETER_TENSORS; i++) {
         num_parameters += model->param_sizes[i];
+        printf("Parameter %zu: %zu bytes\n", i, model->param_sizes[i] * sizeof(float));
     }
     model->num_parameters = num_parameters;
     // 参数内存分配
@@ -853,8 +948,12 @@ void gpt2_forward(GPT2 *model, int* inputs, int B, int T, int trusted_layer) {
         residual_forward(l_residual3, l_residual2, l_fcproj, B*T*C);
     }
     residual = acts.residual3 + (L-1) * B * T * C;
-    layernorm_forward(acts.lnf, acts.lnf_mean, acts.lnf_rstd, residual, params.lnfw, params.lnfb, B, T, C);
-    
+    if (trusted_layer == 2) {
+        layernorm_forward_CA(residual, B, T, C);
+        layernorm_output_CA(acts.lnf, B, T, C);
+    } else {
+        layernorm_forward(acts.lnf, acts.lnf_mean, acts.lnf_rstd, residual, params.lnfw, params.lnfb, B, T, C);
+    }    
     // 如果trusted_layer == 1，则最终的matmul和softmax在TEE中完成
     if (trusted_layer == 1) {
         // 通过TEE接口完成最后的计算      
@@ -956,13 +1055,17 @@ int main(int argc, char *argv[]) {
     if (argc == 3) {
         model_path = argv[1];
         tokenizer_path = argv[2];
-    } else if (argc == 4 && strcmp(argv[3], "-T") == 0) {
+    } else if (argc >= 4 && strcmp(argv[3], "-T") == 0) {
         model_path = argv[1];
         tokenizer_path = argv[2];
-        trusted_layer_flag = 1;
-        printf("Trusted layer enabled.\n");
+        if (argc == 5) {
+            trusted_layer_flag = atoi(argv[4]); // 获取 -T 后的数值
+        } else {
+            trusted_layer_flag = 0; // 默认 0
+        }
+        printf("Trusted layer flag: %d\n", trusted_layer_flag);
     } else {
-        printf("Usage: %s <model_path> <tokenizer_path> [-T]\n", argv[0]);
+        printf("Usage: %s <model_path> <tokenizer_path> [-T <trusted_layer_flag>]\n", argv[0]);
         return 1;
     }
     // 初始化随机种子

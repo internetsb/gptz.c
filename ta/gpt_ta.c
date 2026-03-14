@@ -137,36 +137,118 @@ static void softmax_forward_TA(float* probs, float* logits, int B, int T, int V)
         }
     }
 }
+
+/**
+ * @brief LayerNorm 前向传播 (TA内部实现)
+ */
+static void layernorm_forward_TA_impl(float* out, float* inp, float* weight, float* bias, int B, int T, int C) {
+    float eps = 1e-5f;
+    for (int b = 0; b < B; b++) {
+        for (int t = 0; t < T; t++) {
+            float* x = inp + b * T * C + t * C;
+            float m = 0.0f;
+            for (int i = 0; i < C; i++) m += x[i];
+            m = m / C;
+            
+            float v = 0.0f;
+            for (int i = 0; i < C; i++) {
+                float xshift = x[i] - m;
+                v += xshift * xshift;
+            }
+            v = v / C;
+            float s = 1.0f / (float)ta_sqrt((double)(v + eps));
+            
+            float* out_bt = out + b * T * C + t * C;
+            for (int i = 0; i < C; i++) {
+                out_bt[i] = (s * (x[i] - m)) * weight[i] + bias[i];
+            }
+        }
+    }
+}
 // -------------------- TA 命令入口 --------------------------
-static TEE_Result load_parameters_TA(uint32_t param_types, TEE_Param params[4])
+static TEE_Result load_lnfwb_TA(uint32_t param_types, TEE_Param params[4])
 {
 	uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_INPUT,
-						   TEE_PARAM_TYPE_VALUE_INPUT,
-						   TEE_PARAM_TYPE_NONE,
-						   TEE_PARAM_TYPE_NONE);
-
-	DMSG("has been called");
-
+					      TEE_PARAM_TYPE_MEMREF_INPUT,
+					      TEE_PARAM_TYPE_NONE,
+					      TEE_PARAM_TYPE_NONE);
 	if (param_types != exp_param_types)
 		return TEE_ERROR_BAD_PARAMETERS;
-
-	// 解析参数
-	float* buffer = (float*)params[0].memref.buffer;
-	size_t buffer_size = params[0].memref.size;
-	int wte_size = params[1].value.a;
-	// 分配内存
-    float *params_memory = malloc(buffer_size);
-	if (!params_memory) {
-		EMSG("Out of memory");
-		return TEE_ERROR_OUT_OF_MEMORY;
-	}
-	memcpy(params_memory, buffer, buffer_size);
-
-	// 将参数指针指向相应位置
-	param_tensors.wte = params_memory; // wte在buffer的起始位置
-	param_tensors.wpe = params_memory + wte_size; // wpe紧跟在wte之后
+	
+	param_tensors.lnfw = malloc(params[0].memref.size);
+	memcpy(param_tensors.lnfw, params[0].memref.buffer, params[0].memref.size);
+	param_tensors.lnfb = malloc(params[1].memref.size);
+	memcpy(param_tensors.lnfb, params[1].memref.buffer, params[1].memref.size);
 
 	return TEE_SUCCESS;
+}
+
+static float *full_params_ptr = NULL;
+static size_t total_params_size = 0;
+static uint32_t wte_size_global = 0;
+
+static TEE_Result load_parameters_TA(uint32_t param_types, TEE_Param params[4])
+{
+    // 预期的参数类型：[0] 内存引用(数据), [1] 两个数值(偏移/长度/标志)
+    uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_INPUT,
+                                               TEE_PARAM_TYPE_VALUE_INPUT,
+                                               TEE_PARAM_TYPE_NONE,
+                                               TEE_PARAM_TYPE_NONE);
+                                               
+    // 兼容初始化调用（第一步可能不传 memref，可以设为 VALUE, VALUE）
+    uint32_t init_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
+                                                TEE_PARAM_TYPE_VALUE_INPUT,
+                                                TEE_PARAM_TYPE_NONE,
+                                                TEE_PARAM_TYPE_NONE);
+
+    DMSG("load_parameters_TA has been called");
+
+    // 状态 A: 初始化分配阶段
+    if (param_types == init_param_types) {
+        size_t requested_size = params[0].value.a; // 总字节数
+        wte_size_global = params[0].value.b;       // wte 的元素数量
+        
+        if (full_params_ptr) TEE_Free(full_params_ptr);
+
+        full_params_ptr = TEE_Malloc(requested_size, TEE_MALLOC_FILL_ZERO);
+        if (!full_params_ptr) {
+            EMSG("Failed to allocate %zu bytes in Secure World", requested_size);
+            return TEE_ERROR_OUT_OF_MEMORY;
+        }
+        total_params_size = requested_size;
+        DMSG("Allocated %zu bytes for model parameters", total_params_size);
+        return TEE_SUCCESS;
+    }
+
+    // 状态 B: 数据填充阶段
+    if (param_types == exp_param_types) {
+        if (!full_params_ptr) return TEE_ERROR_BAD_STATE;
+
+        void* chunk_data = params[0].memref.buffer;
+        size_t chunk_size = params[0].memref.size;
+        uint32_t offset = params[1].value.a;
+
+        // 安全检查：防止内存越界写入
+        if (offset + chunk_size > total_params_size) {
+            EMSG("Parameter overflow: offset %u + size %zu > total %zu", 
+                 offset, chunk_size, total_params_size);
+            return TEE_ERROR_BAD_PARAMETERS;
+        }
+
+        // 拷贝当前分块到主内存
+        TEE_MemMove((uint8_t*)full_params_ptr + offset, chunk_data, chunk_size);
+
+        // 如果已经传完最后一块，设置结构体指针
+        if (offset + chunk_size == total_params_size) {
+            param_tensors.wte = full_params_ptr;
+            param_tensors.wpe = full_params_ptr + wte_size_global;
+            DMSG("All parameters loaded. WTE: %p, WPE: %p", 
+                 param_tensors.wte, param_tensors.wpe);
+        }
+        return TEE_SUCCESS;
+    }
+
+    return TEE_ERROR_BAD_PARAMETERS;
 }
 
 static TEE_Result encoder_forward_TA(uint32_t param_types, TEE_Param params[4])
@@ -279,6 +361,36 @@ static TEE_Result softmax_output_TA(uint32_t param_types, TEE_Param params[4])
 	memcpy(buffer, act_tensors.probs, buffer_size);
 	return TEE_SUCCESS;
 }
+
+static TEE_Result layernorm_forward_TA(uint32_t param_types, TEE_Param params[4])
+{
+    uint32_t exp = TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_INPUT, TEE_PARAM_TYPE_VALUE_INPUT,
+                                   TEE_PARAM_TYPE_VALUE_INPUT, TEE_PARAM_TYPE_NONE);
+    if (param_types != exp) return TEE_ERROR_BAD_PARAMETERS;
+
+    float* inp = (float*)params[0].memref.buffer;
+    int B = params[1].value.a;
+    int T = params[1].value.b;
+    int C = params[2].value.a;
+
+    size_t out_size = B * T * C * sizeof(float);
+    if (act_tensors.lnf) free(act_tensors.lnf);
+    act_tensors.lnf = malloc(out_size);
+    if (!act_tensors.lnf) return TEE_ERROR_OUT_OF_MEMORY;
+
+    layernorm_forward_TA_impl(act_tensors.lnf, inp, param_tensors.lnfw, param_tensors.lnfb, B, T, C);
+    return TEE_SUCCESS;
+}
+
+static TEE_Result layernorm_output_TA(uint32_t param_types, TEE_Param params[4])
+{
+    if (param_types != TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_OUTPUT, TEE_PARAM_TYPE_NONE, TEE_PARAM_TYPE_NONE, TEE_PARAM_TYPE_NONE))
+        return TEE_ERROR_BAD_PARAMETERS;
+    
+    memcpy(params[0].memref.buffer, act_tensors.lnf, params[0].memref.size);
+    return TEE_SUCCESS;
+}
+
 /* 当一个TA被调用时调用。sess_ctx保存由TA_OpenSessionEntryPoint()设置的值。其余的参数来自普通世界 */
 TEE_Result TA_InvokeCommandEntryPoint(void __unused *sess_ctx,
 				      uint32_t cmd_id, uint32_t param_types,
@@ -295,6 +407,12 @@ TEE_Result TA_InvokeCommandEntryPoint(void __unused *sess_ctx,
 		return matmul_softmax_forward_TA(param_types, params);
 	case TA_GPT_CMD_SOFTMAX_OUTPUT:
 		return softmax_output_TA(param_types, params);
+	case TA_GPT_CMD_LOAD_LNFWB:
+		return load_lnfwb_TA(param_types, params);
+	case TA_GPT_CMD_LAYERNORM_FORWARD:
+		return layernorm_forward_TA(param_types, params);
+	case TA_GPT_CMD_LAYERNORM_OUTPUT:
+		return layernorm_output_TA(param_types, params);
 	default:
 		return TEE_ERROR_BAD_PARAMETERS;
 	}

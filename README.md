@@ -1,10 +1,8 @@
 # C语言GPT2推理仓库
 >[!WARNING]
->该仓库仅供原理学习，若要用于生产环境，请自行修改优化。
+>该仓库仅供optee及llm原理学习，请勿直接用于生产环境。
 
-这是一个简单、未充分优化的optee环境的gpt2推理仓库，旨在学习目的。
-
-原作者：https://github.com/karpathy/llm.c
+这是一个简单、未充分优化的optee环境的gpt2推理仓库，出于学习目的开发。
 
 ## 如何开始？
 
@@ -24,9 +22,6 @@
    ```
 
 第2,3步将在仓库目录下创建models文件夹，并下载models/gpt2_124M.bin及导出models/gpt2_ranks.bin，由于模型过大（约500MB），无法像darknetz一样放入out-br/target/root，我们将模型文件放入宿主机与qemu的共享目录，并挂载到虚拟机。
-
->[!WARNING]
->若后续转移到开发板，需要额外注意文件大小这一点！
 
 4. 挂载共享目录
 
@@ -60,10 +55,18 @@
 
 7. 运行程序
   ```bash
-  gpt /mnt/shared/models/gpt2_124M.bin /mnt/shared/models/gpt2_ranks.bin -T
+  gpt /mnt/shared/models/gpt2_124M.bin /mnt/shared/models/gpt2_ranks.bin -T 2
   ```
   你将看到类似于以下的输出：
   ```
+  Session started.
+  Trusted layer flag: 2
+  Parameter 0: 154389504 bytes
+  ...
+  Loaded parameter 12...
+  Loaded parameter 13...
+  Loaded parameters into TEE...
+  Loaded 497759232 bytes of model parameters
   Model loaded from: /mnt/shared/models/gpt2_124M.bin
   Tokenizer loaded from: /mnt/shared/models/gpt2_ranks.bin
   Text to complete: Ladies and #待补全文本
@@ -71,17 +74,20 @@
   Generated:  Gentlemen, this year's NBA playoffs have never been about making your living from Twitter. But this year is about living with it. We
   ......
   ```
-
-  可喜可贺，可喜可贺。
-
+  你可以修改host/main.c中sample_mult函数的coin参数来改变模型生成文本的随机性。
 ## 杂谈
-**模型训练？**
 
-我在物理机上花费了一天时间尝试从零开始训练GPT2模型，最终效果惨淡，可想在资源受限的设备上会更加惨不忍睹，本仓库直接加载预训练模型。
+**堆内存限制**
+本仓库一开始想将第一层encoder与最后一层matmul和softmax加载入TA以保护词嵌入参数，但TA的内存限制修改繁琐且不稳定，最终这部分代码未测试但保留，你可以使用 -T 1 看到安全世界中失败的内存分配，在普通世界加密模型，分块载入安全世界解密并推理的做法因效率原因未考虑。
 
-**OP-TEE无法保护大模型？**
+**OP-TEE保护大模型？**
+作用有限：
+大模型内存占用过大，即使仅放入一层也有可能失败，在资源受限的设备上，这样会更糟糕，例如本仓库使用的gpt-2模型，Token Embedding 参数大小约150MB， Attention QKV约占用80MB,FFN Weight 1约110MB，这些重要参数难以放入OP-TEE有限的TEE内存中。
 
-大模型内存占用过大，即使仅放入一层也有可能失败，在资源受限的设备上，这样会更糟糕。
+## 参考
+- [llm.c](https://github.com/karpathy/llm.c)
+- [darknetz](https://github.com/mofanv/darknetz)
+- [gpt.c](https://git.nju.edu.cn/jyy/os2025/-/tree/M6)
 
 ## 许可证：
 MIT License
