@@ -16,12 +16,12 @@
    python3 download_model.py
    ```
 
-3. 然后导出模型BPE
+3. 然后导出模型BPE，依赖tiktoken库
    ```bash
    python3 export_tokenizer.py
    ```
 
-第2,3步将在仓库目录下创建models文件夹，并下载models/gpt2_124M.bin及导出models/gpt2_ranks.bin，由于模型过大（约500MB），无法像darknetz一样放入out-br/target/root，我们将模型文件放入宿主机与qemu的共享目录，并挂载到虚拟机。
+第2,3步将在仓库目录下创建models文件夹，并下载models/gpt2_124M.bin及导出models/gpt2_ranks.bin，由于模型过大（约500MB），无法像darknetz一样放入out-br/target/root，我们将模型文件放入宿主机与qemu的共享目录，并挂载到虚拟机。（生产环境注意）
 
 4. 挂载共享目录
 
@@ -57,7 +57,7 @@
   ```bash
   gpt /mnt/shared/models/gpt2_124M.bin /mnt/shared/models/gpt2_ranks.bin -T 2
   ```
-  你将看到类似于以下的输出：
+  加载参数，并将最后的layernorm放入TA，你将看到类似于以下的输出：
   ```
   Session started.
   Trusted layer flag: 2
@@ -78,9 +78,11 @@
 ## 杂谈
 
 **堆内存限制**
+
 本仓库一开始想将第一层encoder与最后一层matmul和softmax加载入TA以保护词嵌入参数，但TA的内存限制修改繁琐且不稳定，最终这部分代码未测试但保留，你可以使用 -T 1 看到安全世界中失败的内存分配，在普通世界加密模型，分块载入安全世界解密并推理的做法因效率原因未考虑。
 
 **OP-TEE保护大模型？**
+
 作用有限：
 大模型内存占用过大，即使仅放入一层也有可能失败，在资源受限的设备上，这样会更糟糕，例如本仓库使用的gpt-2模型，Token Embedding 参数大小约150MB， Attention QKV约占用80MB,FFN Weight 1约110MB，这些重要参数难以放入OP-TEE有限的TEE内存中。
 
