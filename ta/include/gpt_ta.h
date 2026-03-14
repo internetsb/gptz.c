@@ -11,6 +11,10 @@
 		{ 0x9d, 0x99, 0xb8, 0xcf, 0x6d, 0xee, 0x99, 0x7c} }
 
 /* TODO: TA函数ID */
-#define TA_GPT_CMD_INC_VALUE 0
+#define TA_GPT_CMD_LOAD_PARAMS 0
+#define TA_GPT_CMD_ENCODER_FORWARD 1
+#define TA_GPT_CMD_ENCODER_OUTPUT 2
+#define TA_GPT_CMD_SOFTMAX_FORWARD 3
+#define TA_GPT_CMD_SOFTMAX_OUTPUT 4
 
 #endif /*TA_GPT_H*/

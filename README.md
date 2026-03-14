@@ -1,4 +1,6 @@
 # C语言GPT2推理仓库
+>[!WARNING]
+>该仓库仅供原理学习，若要用于生产环境，请自行修改优化。
 
 这是一个简单、未充分优化的optee环境的gpt2推理仓库，旨在学习目的。
 
@@ -58,14 +60,14 @@
 
 7. 运行程序
   ```bash
-  gpt /mnt/shared/models/gpt2_124M.bin /mnt/shared/models/gpt2_ranks.bin
+  gpt /mnt/shared/models/gpt2_124M.bin /mnt/shared/models/gpt2_ranks.bin -T
   ```
   你将看到类似于以下的输出：
   ```
   Model loaded from: /mnt/shared/models/gpt2_124M.bin
   Tokenizer loaded from: /mnt/shared/models/gpt2_ranks.bin
-  Text to complete: Ladies and
-
+  Text to complete: Ladies and #待补全文本
+  #模型输出
   Generated:  Gentlemen, this year's NBA playoffs have never been about making your living from Twitter. But this year is about living with it. We
   ......
   ```
@@ -78,6 +80,8 @@
 我在物理机上花费了一天时间尝试从零开始训练GPT2模型，最终效果惨淡，可想在资源受限的设备上会更加惨不忍睹，本仓库直接加载预训练模型。
 
 **OP-TEE无法保护大模型？**
-大模型内存占用过大，即使仅放入一层也有可能失败，在资源受限的设备上，这样会更糟糕，可考虑层融合等其他方式。
+
+大模型内存占用过大，即使仅放入一层也有可能失败，在资源受限的设备上，这样会更糟糕。
+
 ## 许可证：
 MIT License

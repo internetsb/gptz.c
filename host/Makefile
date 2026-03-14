@@ -19,7 +19,7 @@ BINARY = optee_example_gpt
 all: $(BINARY)
 
 $(BINARY): $(OBJS)
-	$(CC) -o $@ $^ $(LDFLAGS) $(LDADD)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(LDADD)
 
 .PHONY: clean
 clean:
