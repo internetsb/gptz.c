@@ -146,6 +146,13 @@ int bpe_encode(const char* text, int* out_tokens) {
 // ----------------------------------------------------------------------------
 // GPT-2 模型定义及前向传播
 
+/**
+ * @brief 编码器前向传播（CA实现）：token嵌入 + 位置嵌入
+ * @param inputs 输入token IDs，形状为(B, T)
+ * @param B 批次大小
+ * @param T 序列长度
+ * @param C 通道数（隐藏层维度）
+ */
 void encoder_forward_CA(int* inputs, int B, int T, int C){
     int inputs_size = B * T * sizeof(int);
     int* inputs_buffer = malloc(inputs_size);
@@ -171,6 +178,13 @@ void encoder_forward_CA(int* inputs, int B, int T, int C){
     free(inputs_buffer);
 }
 
+/**
+ * @brief 获取编码器输出（CA实现）
+ * @param[out] out 输出张量，形状为(B, T, C)
+ * @param B 批次大小
+ * @param T 序列长度
+ * @param C 通道数（隐藏层维度）
+ */
 void encoder_output_CA(float* out, int B, int T, int C) {
     int out_size = B * T * C * sizeof(float);
     float* out_buffer = malloc(out_size);
@@ -218,6 +232,13 @@ void encoder_forward(float* out,
     }
 }
 
+/**
+ * @brief LayerNorm前向传播（CA实现）
+ * @param inp 输入张量，形状为(B, T, C)
+ * @param B 批次大小
+ * @param T 序列长度
+ * @param C 通道数（隐藏层维度）
+ */
 void layernorm_forward_CA(float* inp, int B, int T, int C) {
     TEEC_Operation op = {0};
     uint32_t err_origin;
@@ -235,6 +256,13 @@ void layernorm_forward_CA(float* inp, int B, int T, int C) {
     }
 }
 
+/**
+ * @brief 获取LayerNorm输出（CA实现）
+ * @param[out] out 输出张量，形状为(B, T, C)
+ * @param B 批次大小
+ * @param T 序列长度
+ * @param C 通道数（隐藏层维度）
+ */
 void layernorm_output_CA(float* out, int B, int T, int C) {
     TEEC_Operation op = {0};
     uint32_t err_origin;
@@ -481,6 +509,14 @@ void residual_forward(float* out, float* inp1, float* inp2, int N) {
 // 在TA实现
 // matmul_forward(acts.logits, acts.lnf, params.wte, NULL, B, T, C, V);
 // softmax_forward(acts.probs, acts.logits, B, T, V);
+/**
+ * @brief 矩阵乘法和Softmax前向传播（CA实现）
+ * @param inputs 输入张量，形状为(B, T, C)
+ * @param B 批次大小
+ * @param T 序列长度
+ * @param C 通道数（隐藏层维度）
+ * @param V 词汇表大小
+ */
 void matmul_softmax_forward_CA(float* inputs, int B, int T, int C, int V){
     int inputs_size = B * T * C * sizeof(float);
     float* inputs_buffer = malloc(inputs_size);
@@ -507,6 +543,13 @@ void matmul_softmax_forward_CA(float* inputs, int B, int T, int C, int V){
 }
 
 
+/**
+ * @brief 获取Softmax输出（CA实现）
+ * @param output 输出张量，形状为(B, T, V)
+ * @param B 批次大小
+ * @param T 序列长度
+ * @param V 词汇表大小
+ */
 void softmax_output_CA(float *output, int B, int T, int V){
     int outputs_size = B * T * V * sizeof(float);
     float *outputs_buffer = malloc(outputs_size);
@@ -632,6 +675,11 @@ float* malloc_and_point_activations(ActivationTensors* acts, size_t* act_sizes) 
 
 #define CHUNK_SIZE (1024 * 1024) // 每次 1MB
 
+/**
+ * @brief 加载模型参数到TA（CA实现）
+ * @param model GPT2模型结构体指针
+ * @param model_file 已打开的模型文件指针
+ */
 void load_parameters_CA(GPT2 *model, FILE *model_file) {
     int wte_elements = model->param_sizes[0];
     int wpe_elements = model->param_sizes[1];
@@ -682,6 +730,11 @@ void load_parameters_CA(GPT2 *model, FILE *model_file) {
     free(chunk_buffer);
 }
 
+/**
+ * @brief 加载LayerNorm的权重和偏置到TA（CA实现）
+ * @param model GPT2模型结构体指针
+ * @param model_file 已打开的模型文件指针
+ */
 void load_lnfwb_CA(GPT2 *model, FILE *model_file) { 
     int lnfw_elements = model->param_sizes[14];
     int lnfb_elements = model->param_sizes[15];

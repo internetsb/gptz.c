@@ -166,6 +166,9 @@ static void layernorm_forward_TA_impl(float* out, float* inp, float* weight, flo
     }
 }
 // -------------------- TA 命令入口 --------------------------
+/**
+ * @brief 加载LayerNorm的权重和偏置
+ */
 static TEE_Result load_lnfwb_TA(uint32_t param_types, TEE_Param params[4])
 {
 	uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_INPUT,
@@ -187,6 +190,9 @@ static float *full_params_ptr = NULL;
 static size_t total_params_size = 0;
 static uint32_t wte_size_global = 0;
 
+/**
+ * @brief 加载模型参数到TEE内存
+ */
 static TEE_Result load_parameters_TA(uint32_t param_types, TEE_Param params[4])
 {
     // 预期的参数类型：[0] 内存引用(数据), [1] 两个数值(偏移/长度/标志)
@@ -251,6 +257,9 @@ static TEE_Result load_parameters_TA(uint32_t param_types, TEE_Param params[4])
     return TEE_ERROR_BAD_PARAMETERS;
 }
 
+/**
+ * @brief 编码器前向传播：token嵌入 + 位置嵌入
+ */
 static TEE_Result encoder_forward_TA(uint32_t param_types, TEE_Param params[4])
 {
 	uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_INPUT,
@@ -294,6 +303,9 @@ static TEE_Result encoder_forward_TA(uint32_t param_types, TEE_Param params[4])
 	return TEE_SUCCESS;
 }
 
+/**
+ * @brief 获取编码器输出
+ */
 static TEE_Result encoder_output_TA(uint32_t param_types, TEE_Param params[4])
 { 
 	uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_OUTPUT,
@@ -313,6 +325,9 @@ static TEE_Result encoder_output_TA(uint32_t param_types, TEE_Param params[4])
 }
 // matmul_forward(acts.logits, acts.lnf, params.wte, NULL, B, T, C, V);
 // softmax_forward(acts.probs, acts.logits, B, T, V);
+/**
+ * @brief 矩阵乘法和Softmax前向传播
+ */
 static TEE_Result matmul_softmax_forward_TA(uint32_t param_types, TEE_Param params[4])
 {
 	uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_INPUT,
@@ -344,6 +359,9 @@ static TEE_Result matmul_softmax_forward_TA(uint32_t param_types, TEE_Param para
 	return TEE_SUCCESS;
 }
 
+/**
+ * @brief 获取Softmax输出
+ */
 static TEE_Result softmax_output_TA(uint32_t param_types, TEE_Param params[4])
 {
 	uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_OUTPUT,
@@ -362,6 +380,9 @@ static TEE_Result softmax_output_TA(uint32_t param_types, TEE_Param params[4])
 	return TEE_SUCCESS;
 }
 
+/**
+ * @brief LayerNorm前向传播
+ */
 static TEE_Result layernorm_forward_TA(uint32_t param_types, TEE_Param params[4])
 {
     uint32_t exp = TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_INPUT, TEE_PARAM_TYPE_VALUE_INPUT,
@@ -382,6 +403,9 @@ static TEE_Result layernorm_forward_TA(uint32_t param_types, TEE_Param params[4]
     return TEE_SUCCESS;
 }
 
+/**
+ * @brief 返回LayerNorm输出
+ */
 static TEE_Result layernorm_output_TA(uint32_t param_types, TEE_Param params[4])
 {
     if (param_types != TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_OUTPUT, TEE_PARAM_TYPE_NONE, TEE_PARAM_TYPE_NONE, TEE_PARAM_TYPE_NONE))
