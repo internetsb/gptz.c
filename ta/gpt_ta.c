@@ -1,17 +1,16 @@
-// SPDX-License-Identifier: BSD-2-Clause
-/*
- * Copyright (c) 2016, Linaro Limited
- * All rights reserved.
- */
-
 #include <tee_internal_api.h>
 #include <tee_internal_api_extensions.h>
 
 #include <gpt_ta.h>
 #include <model_ta.h>
 
+// 参数和结果空间结构指针
 ParameterTensors_TA param_tensors;
 ActivationTensors_TA act_tensors;
+// 分块加载参数静态变量
+static float *full_params_ptr = NULL;
+static size_t total_params_size = 0;
+static uint32_t wte_size_global = 0;
 // ------------------------ TA 基本函数--------------------------
 
 /* 当TA实例被创建时调用。这是TA的第一个调用 */
@@ -53,25 +52,15 @@ TEE_Result TA_OpenSessionEntryPoint(uint32_t param_types,
 }
 
 /* 当一个会话被关闭时调用。sess_ctx 值是 TA_OpenSessionEntryPoint() 中设置的 */
-void TA_CloseSessionEntryPoint(void __unused *sess_ctx)
-{
-	if (param_tensors.wte) {
-		free(param_tensors.wte);
-	}
-	if (param_tensors.wpe) {
-		free(param_tensors.wpe);
-	}
-	if (act_tensors.encoded) {
-		free(act_tensors.encoded);
-	}
-	if (act_tensors.logits) {
-		free(act_tensors.logits);
-	} 
-	if (act_tensors.probs) {
-		free(act_tensors.probs);
-	}
-	IMSG("Resources freed\n");
-	IMSG("Goodbye!\n");
+void TA_CloseSessionEntryPoint(void __unused *sess_ctx) {
+    if (full_params_ptr) { TEE_Free(full_params_ptr); full_params_ptr = NULL; }
+    if (param_tensors.lnfw) { TEE_Free(param_tensors.lnfw); param_tensors.lnfw = NULL; }
+    if (act_tensors.encoded) { TEE_Free(act_tensors.encoded); act_tensors.encoded = NULL; }
+    if (act_tensors.logits) { TEE_Free(act_tensors.logits); act_tensors.logits = NULL; }
+    if (act_tensors.probs) { TEE_Free(act_tensors.probs); act_tensors.probs = NULL; }
+    if (act_tensors.lnf) { TEE_Free(act_tensors.lnf); act_tensors.lnf = NULL; }
+    
+    IMSG("Resources freed, Session closed.");
 }
 // ------------------------ TA 函数实现 --------------------------
 
@@ -178,82 +167,45 @@ static TEE_Result load_lnfwb_TA(uint32_t param_types, TEE_Param params[4])
 	if (param_types != exp_param_types)
 		return TEE_ERROR_BAD_PARAMETERS;
 	
-	param_tensors.lnfw = malloc(params[0].memref.size);
-	memcpy(param_tensors.lnfw, params[0].memref.buffer, params[0].memref.size);
-	param_tensors.lnfb = malloc(params[1].memref.size);
-	memcpy(param_tensors.lnfb, params[1].memref.buffer, params[1].memref.size);
+	param_tensors.lnfw = TEE_Malloc(params[0].memref.size, 0);
+	TEE_MemMove(param_tensors.lnfw, params[0].memref.buffer, params[0].memref.size);
+	param_tensors.lnfb = TEE_Malloc(params[1].memref.size, 0);
+	TEE_MemMove(param_tensors.lnfb, params[1].memref.buffer, params[1].memref.size);
 
 	return TEE_SUCCESS;
 }
 
-static float *full_params_ptr = NULL;
-static size_t total_params_size = 0;
-static uint32_t wte_size_global = 0;
-
 /**
- * @brief 加载模型参数到TEE内存
+ * @brief 分块加载模型参数wte,wpe到TEE内存
  */
-static TEE_Result load_parameters_TA(uint32_t param_types, TEE_Param params[4])
-{
-    // 预期的参数类型：[0] 内存引用(数据), [1] 两个数值(偏移/长度/标志)
-    uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_INPUT,
-                                               TEE_PARAM_TYPE_VALUE_INPUT,
-                                               TEE_PARAM_TYPE_NONE,
-                                               TEE_PARAM_TYPE_NONE);
-                                               
-    // 兼容初始化调用（第一步可能不传 memref，可以设为 VALUE, VALUE）
-    uint32_t init_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
-                                                TEE_PARAM_TYPE_VALUE_INPUT,
-                                                TEE_PARAM_TYPE_NONE,
-                                                TEE_PARAM_TYPE_NONE);
+static TEE_Result load_parameters_TA(uint32_t param_types, TEE_Param params[4]) {
+    uint32_t exp_pt = TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_INPUT, TEE_PARAM_TYPE_VALUE_INPUT, 0, 0);
+    uint32_t init_pt = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT, TEE_PARAM_TYPE_VALUE_INPUT, 0, 0);
 
-    DMSG("load_parameters_TA has been called");
-
-    // 状态 A: 初始化分配阶段
-    if (param_types == init_param_types) {
-        size_t requested_size = params[0].value.a; // 总字节数
-        wte_size_global = params[0].value.b;       // wte 的元素数量
-        
+    if (param_types == init_pt) {
+        size_t req_sz = params[0].value.a;
+        wte_size_global = params[0].value.b;
         if (full_params_ptr) TEE_Free(full_params_ptr);
-
-        full_params_ptr = TEE_Malloc(requested_size, TEE_MALLOC_FILL_ZERO);
-        if (!full_params_ptr) {
-            EMSG("Failed to allocate %zu bytes in Secure World", requested_size);
-            return TEE_ERROR_OUT_OF_MEMORY;
-        }
-        total_params_size = requested_size;
-        DMSG("Allocated %zu bytes for model parameters", total_params_size);
+        full_params_ptr = TEE_Malloc(req_sz, TEE_MALLOC_FILL_ZERO);
+        if (!full_params_ptr) return TEE_ERROR_OUT_OF_MEMORY;
+        total_params_size = req_sz;
         return TEE_SUCCESS;
     }
 
-    // 状态 B: 数据填充阶段
-    if (param_types == exp_param_types) {
+    if (param_types == exp_pt) {
         if (!full_params_ptr) return TEE_ERROR_BAD_STATE;
-
-        void* chunk_data = params[0].memref.buffer;
-        size_t chunk_size = params[0].memref.size;
         uint32_t offset = params[1].value.a;
+        size_t sz = params[0].memref.size;
+        if (offset + sz > total_params_size) return TEE_ERROR_BAD_PARAMETERS;
+        
+        TEE_MemMove((uint8_t*)full_params_ptr + offset, params[0].memref.buffer, sz);
 
-        // 安全检查：防止内存越界写入
-        if (offset + chunk_size > total_params_size) {
-            EMSG("Parameter overflow: offset %u + size %zu > total %zu", 
-                 offset, chunk_size, total_params_size);
-            return TEE_ERROR_BAD_PARAMETERS;
-        }
-
-        // 拷贝当前分块到主内存
-        TEE_MemMove((uint8_t*)full_params_ptr + offset, chunk_data, chunk_size);
-
-        // 如果已经传完最后一块，设置结构体指针
-        if (offset + chunk_size == total_params_size) {
+        if (offset + sz == total_params_size) {
             param_tensors.wte = full_params_ptr;
             param_tensors.wpe = full_params_ptr + wte_size_global;
-            DMSG("All parameters loaded. WTE: %p, WPE: %p", 
-                 param_tensors.wte, param_tensors.wpe);
         }
         return TEE_SUCCESS;
     }
-
     return TEE_ERROR_BAD_PARAMETERS;
 }
 
@@ -279,7 +231,8 @@ static TEE_Result encoder_forward_TA(uint32_t param_types, TEE_Param params[4])
 	int C = params[2].value.a;
     // 分配输出内存
 	int output_size = B * T * C * sizeof(float);
-	act_tensors.encoded = malloc(output_size);
+	if (act_tensors.encoded) TEE_Free(act_tensors.encoded);
+    act_tensors.encoded = TEE_Malloc(output_size, 0);
 	if (!act_tensors.encoded) {
 		EMSG("Out of memory");
 		return TEE_ERROR_OUT_OF_MEMORY;
@@ -320,7 +273,7 @@ static TEE_Result encoder_output_TA(uint32_t param_types, TEE_Param params[4])
 	// 输出act_tensors.encoded到输出缓冲区
 	float *buffer = (float*)params[0].memref.buffer;
 	size_t buffer_size = params[0].memref.size;
-	memcpy(buffer, act_tensors.encoded, buffer_size);
+	TEE_MemMove(buffer, act_tensors.encoded, buffer_size);
 	return TEE_SUCCESS;
 }
 // matmul_forward(acts.logits, acts.lnf, params.wte, NULL, B, T, C, V);
@@ -347,8 +300,11 @@ static TEE_Result matmul_softmax_forward_TA(uint32_t param_types, TEE_Param para
 	int V = params[2].value.b;
 	// 分配输出内存
 	int output_size = B * T * V * sizeof(float);
-	act_tensors.logits = malloc(output_size);
-	act_tensors.probs = malloc(output_size);
+	if (act_tensors.logits) { TEE_Free(act_tensors.logits); act_tensors.logits = NULL; }
+    if (act_tensors.probs) { TEE_Free(act_tensors.probs); act_tensors.probs = NULL; }
+
+    act_tensors.logits = TEE_Malloc(output_size, 0);
+    act_tensors.probs = TEE_Malloc(output_size, 0);
 	if (!act_tensors.logits || !act_tensors.probs) {
 		EMSG("Out of memory");
 		return TEE_ERROR_OUT_OF_MEMORY;
@@ -376,7 +332,7 @@ static TEE_Result softmax_output_TA(uint32_t param_types, TEE_Param params[4])
 	// 输出act_tensors.probs到输出缓冲区
 	float *buffer = (float*)params[0].memref.buffer;
 	size_t buffer_size = params[0].memref.size;
-	memcpy(buffer, act_tensors.probs, buffer_size);
+	TEE_MemMove(buffer, act_tensors.probs, buffer_size);
 	return TEE_SUCCESS;
 }
 
@@ -395,8 +351,8 @@ static TEE_Result layernorm_forward_TA(uint32_t param_types, TEE_Param params[4]
     int C = params[2].value.a;
 
     size_t out_size = B * T * C * sizeof(float);
-    if (act_tensors.lnf) free(act_tensors.lnf);
-    act_tensors.lnf = malloc(out_size);
+    if (act_tensors.lnf) { TEE_Free(act_tensors.lnf); act_tensors.lnf = NULL; }
+    act_tensors.lnf = TEE_Malloc(out_size, 0);
     if (!act_tensors.lnf) return TEE_ERROR_OUT_OF_MEMORY;
 
     layernorm_forward_TA_impl(act_tensors.lnf, inp, param_tensors.lnfw, param_tensors.lnfb, B, T, C);
@@ -411,7 +367,7 @@ static TEE_Result layernorm_output_TA(uint32_t param_types, TEE_Param params[4])
     if (param_types != TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_OUTPUT, TEE_PARAM_TYPE_NONE, TEE_PARAM_TYPE_NONE, TEE_PARAM_TYPE_NONE))
         return TEE_ERROR_BAD_PARAMETERS;
     
-    memcpy(params[0].memref.buffer, act_tensors.lnf, params[0].memref.size);
+    TEE_MemMove(params[0].memref.buffer, act_tensors.lnf, params[0].memref.size);
     return TEE_SUCCESS;
 }
 

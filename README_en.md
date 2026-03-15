@@ -65,7 +65,7 @@ Steps 2 and 3 will create a models folder in the repository directory and downlo
   Session started.
   Trusted layer flag: 2
   Parameter 0: 154389504 bytes
-  ...
+  #......
   Loaded parameter 12...
   Loaded parameter 13...
   Loaded parameters into TEE...
@@ -75,20 +75,73 @@ Steps 2 and 3 will create a models folder in the repository directory and downlo
   Text to complete: Ladies and #Text to be completed
   #Model output
   Generated:  Gentlemen, this year's NBA playoffs have never been about making your living from Twitter. But this year is about living with it. We
-  ......
+  #......
   ```
   You can modify the coin parameter in the sample_mult function in host/main.c to change the randomness of the model-generated text.
+
+8. Expanding TA Heap Memory
+
+In step 7, the example command uses the parameter `-T 2`, which means loading normalization layer parameters into TA for inference (to be honest, what's the value in this?).
+
+Below are the steps I actually tested that can expand TA heap memory in the QEMU environment, allowing using parameter `-T 1` to protect the Embedding layer parameters: (Additionally, `-T 0` means all parameters are inferred in the normal world):
+
+```
+/* 1. Modify optee_os/core/mm/pgt_cache.c */
+// #define PGT_CACHE_SIZE	ROUNDUP(CFG_PGT_CACHE_ENTRIES, PGT_NUM_PGT_PER_PAGE)
+#define PGT_CACHE_SIZE 512
+
+/* 2. Modify trusted-firmware-a/plat/qemu/qemu/include/platform_def.h */
+#define SEC_DRAM_BASE           0x70000000   // Base address
+#define SEC_DRAM_SIZE           0x0C800000	 // Size 200MB
+
+/* 3. Add a line in optee_os/core/arch/arm/plat-vexpress/platform_config.h */
+#define TEE_RAM_VA_SIZE (200 * 1024 * 1024) //200MB
+
+/* 4. Modify optee_os/core/arch/arm/plat-vexpress/conf.mk to configure qemu_virt */
+CFG_TZDRAM_START ?= 0x70000000 # Don't conflict with Kernel (0x42200000)
+CFG_TZDRAM_SIZE  ?= 0x0C800000 # 200M
+
+/* 5. Add a line at the end of build/qemu_v8.mk file */
+OPTEE_OS_COMMON_FLAGS += CFG_TZDRAM_START=0x70000000 CFG_TZDRAM_SIZE=0x0C800000
+
+/* 6. Modify optee_examples/gpt/ta/user_ta_header_defines.h */
+#define TA_DATA_SIZE			(165 * 1024 * 1024) // 165M heap memory
+```
+
+After recompiling and running, use parameter `-T 1` for inference, you will see output similar to the following:
+```
+  Session started.
+  Trusted layer flag: 1
+  Parameter 0: 154389504 bytes
+  #......
+  Parameter 15: 3072 bytes
+  Allocated 497759232 bytes for model parameters
+  Uploading parameters: 100.0%
+  Done.
+  Loaded parameters into TEE...
+  Loaded parameter 2...
+  #......
+  Model loaded from: /mnt/shared/models/gpt2_124M.bin
+  Tokenizer loaded from: /mnt/shared/models/gpt2_ranks.bin
+  Text to complete: Ladies and
+
+  Generated:  Gentlemen, this year's NBA playoffs have
+  #......
+```
 
 ## Random Thoughts
 
 **Heap Memory Limitations**
 
-Initially, this repository intended to load the first encoder layer and the final matmul and softmax layers into the TA to protect embedding parameters. However, modifying TA memory limitations is cumbersome and unstable. The related code was preserved but not tested. You can use -T 1 to see failed memory allocation in the secure world. Encrypting the model in the normal world and loading it piece by piece into the secure world for decryption and inference was not considered due to efficiency reasons.
+Initially, this repository intended to load the first encoder and the final matmul and softmax layers into the TA to protect token embedding parameters, but TA memory limitations require tedious modifications and are unstable, so I'm not sure if this is a good idea. Additionally, encrypting the model in the normal world, loading it piece by piece into the secure world for decryption and inference was not considered due to efficiency reasons. 
+
+The model may crash after running for some time. (Fixed?)
 
 **OP-TEE protecting Large Language Models?**
 
 Limited effectiveness:
-LLMs require too much memory. Even loading just one layer may fail. On resource-constrained devices, this would be worse. For example, the GPT-2 model used in this repository has a Token Embedding parameter size of approximately 150MB, Attention QKV occupies about 80MB, and FFN Weight 1 takes about 110MB. These important parameters are difficult to fit into the limited TEE memory of OP-TEE.
+
+LLMs require too much memory. Even loading just one layer may fail. On resource-constrained devices, this would be worse. For example, the GPT-2 model used in this repository has a Token Embedding parameter size of approximately 150MB, Attention QKV occupies about 80MB, FFN Weight 1 takes about 110MB. These important parameters are difficult to fit into the limited TEE memory of OP-TEE. And GPT-2 is just a "small" large model; what about models with dozens of billions of parameters?
 
 ## References
 - [llm.c](https://github.com/karpathy/llm.c)
