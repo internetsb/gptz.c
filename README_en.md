@@ -135,7 +135,7 @@ After recompiling and running, use parameter `-T 1` for inference, you will see 
 
 Initially, this repository intended to load the first encoder and the final matmul and softmax layers into the TA to protect token embedding parameters, but TA memory limitations require tedious modifications and are unstable, so I'm not sure if this is a good idea. Additionally, encrypting the model in the normal world, loading it piece by piece into the secure world for decryption and inference was not considered due to efficiency reasons. 
 
-The model may crash after running for some time. (Fixed?)
+The model may crash after running for some time. 
 
 **OP-TEE protecting Large Language Models?**
 
