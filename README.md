@@ -105,6 +105,8 @@ OPTEE_OS_COMMON_FLAGS += CFG_TZDRAM_START=0x70000000 CFG_TZDRAM_SIZE=0x0C800000
 
 /* 6.修改optee_examples/gpt/ta/user_ta_header_defines.h */
 #define TA_DATA_SIZE			(165 * 1024 * 1024) // 165M堆内存
+
+/* 7.删除out-br/target/root/下的.git文件夹 */
 ```
 
 重新编译运行后使用参数`-T 1`推理，你将看到类似以下的输出：

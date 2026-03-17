@@ -106,6 +106,8 @@ OPTEE_OS_COMMON_FLAGS += CFG_TZDRAM_START=0x70000000 CFG_TZDRAM_SIZE=0x0C800000
 
 /* 6. Modify optee_examples/gpt/ta/user_ta_header_defines.h */
 #define TA_DATA_SIZE			(165 * 1024 * 1024) // 165M heap memory
+
+/* 7. Delete the .git folder in out-br/target/root directory */
 ```
 
 After recompiling and running, use parameter `-T 1` for inference, you will see output similar to the following:
