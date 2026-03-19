@@ -50,8 +50,7 @@
 
 6. 在 Normal World 挂载共享目录
   ```bash
-  mkdir /mnt/shared
-  mount -t 9p -o trans=virtio host_share /mnt/shared
+  mkdir /mnt/shared && mount -t 9p -o trans=virtio host_share /mnt/shared
   ```
   文件夹`/mnt/shared`即为共享目录，`ls /mnt/shared`应能看到模型文件。
 

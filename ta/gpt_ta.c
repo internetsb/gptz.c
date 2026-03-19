@@ -55,10 +55,9 @@ TEE_Result TA_OpenSessionEntryPoint(uint32_t param_types,
 void TA_CloseSessionEntryPoint(void __unused *sess_ctx) {
     if (full_params_ptr) { TEE_Free(full_params_ptr); full_params_ptr = NULL; }
     if (param_tensors.lnfw) { TEE_Free(param_tensors.lnfw); param_tensors.lnfw = NULL; }
-    if (act_tensors.encoded) { TEE_Free(act_tensors.encoded); act_tensors.encoded = NULL; }
-    if (act_tensors.logits) { TEE_Free(act_tensors.logits); act_tensors.logits = NULL; }
-    if (act_tensors.probs) { TEE_Free(act_tensors.probs); act_tensors.probs = NULL; }
-    if (act_tensors.lnf) { TEE_Free(act_tensors.lnf); act_tensors.lnf = NULL; }
+    if (param_tensors.lnfb) { TEE_Free(param_tensors.lnfb); param_tensors.lnfb = NULL; }
+	if (act_tensors.logits) { TEE_Free(act_tensors.logits); act_tensors.logits = NULL; }
+
     
     IMSG("Resources freed, Session closed.");
 }
@@ -215,9 +214,9 @@ static TEE_Result load_parameters_TA(uint32_t param_types, TEE_Param params[4]) 
 static TEE_Result encoder_forward_TA(uint32_t param_types, TEE_Param params[4])
 {
 	uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_INPUT,
+						   TEE_PARAM_TYPE_MEMREF_OUTPUT,
 						   TEE_PARAM_TYPE_VALUE_INPUT,
-						   TEE_PARAM_TYPE_VALUE_INPUT,
-						   TEE_PARAM_TYPE_NONE);
+						   TEE_PARAM_TYPE_VALUE_INPUT);
 
 	DMSG("has been called");
 
@@ -226,19 +225,13 @@ static TEE_Result encoder_forward_TA(uint32_t param_types, TEE_Param params[4])
 
 	// 解析参数
 	int* inputs = (int*)params[0].memref.buffer;
-	int B = params[1].value.a;
-	int T = params[1].value.b;
-	int C = params[2].value.a;
-    // 分配输出内存
-	int output_size = B * T * C * sizeof(float);
-	if (act_tensors.encoded) TEE_Free(act_tensors.encoded);
-    act_tensors.encoded = TEE_Malloc(output_size, 0);
-	if (!act_tensors.encoded) {
-		EMSG("Out of memory");
-		return TEE_ERROR_OUT_OF_MEMORY;
-	}
+	float* output = (float*)params[1].memref.buffer;
+	int B = params[2].value.a;
+	int T = params[2].value.b;
+	int C = params[3].value.a;
+
 	// 计算
-	float* out = act_tensors.encoded;
+	float* out = output;
 	float* wte = param_tensors.wte;
 	float* wpe = param_tensors.wpe;
 
@@ -255,27 +248,6 @@ static TEE_Result encoder_forward_TA(uint32_t param_types, TEE_Param params[4])
     }
 	return TEE_SUCCESS;
 }
-
-/**
- * @brief 获取编码器输出
- */
-static TEE_Result encoder_output_TA(uint32_t param_types, TEE_Param params[4])
-{ 
-	uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_OUTPUT,
-						   TEE_PARAM_TYPE_NONE,
-						   TEE_PARAM_TYPE_NONE,
-						   TEE_PARAM_TYPE_NONE);
-	
-	DMSG("has been called");
-
-	if (param_types != exp_param_types)
-		return TEE_ERROR_BAD_PARAMETERS;
-	// 输出act_tensors.encoded到输出缓冲区
-	float *buffer = (float*)params[0].memref.buffer;
-	size_t buffer_size = params[0].memref.size;
-	TEE_MemMove(buffer, act_tensors.encoded, buffer_size);
-	return TEE_SUCCESS;
-}
 // matmul_forward(acts.logits, acts.lnf, params.wte, NULL, B, T, C, V);
 // softmax_forward(acts.probs, acts.logits, B, T, V);
 /**
@@ -284,55 +256,38 @@ static TEE_Result encoder_output_TA(uint32_t param_types, TEE_Param params[4])
 static TEE_Result matmul_softmax_forward_TA(uint32_t param_types, TEE_Param params[4])
 {
 	uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_INPUT,
+						   TEE_PARAM_TYPE_MEMREF_OUTPUT,
 						   TEE_PARAM_TYPE_VALUE_INPUT,
-						   TEE_PARAM_TYPE_VALUE_INPUT,
-						   TEE_PARAM_TYPE_NONE);
+						   TEE_PARAM_TYPE_VALUE_INPUT);
 	
 	DMSG("has been called");
 
 	if (param_types != exp_param_types)
 		return TEE_ERROR_BAD_PARAMETERS;
+	
 	// 解析参数
 	float* inputs = (float*)params[0].memref.buffer;
-	int B = params[1].value.a;
-	int T = params[1].value.b;
-	int C = params[2].value.a;
-	int V = params[2].value.b;
-	// 分配输出内存
-	int output_size = B * T * V * sizeof(float);
-	if (act_tensors.logits) { TEE_Free(act_tensors.logits); act_tensors.logits = NULL; }
-    if (act_tensors.probs) { TEE_Free(act_tensors.probs); act_tensors.probs = NULL; }
+	float* output = (float*)params[1].memref.buffer; // 输出空间，用于存储softmax结果（概率）
+	int B = params[2].value.a;
+	int T = params[2].value.b;
+	int C = params[3].value.a;
+	int V = params[3].value.b;
 
-    act_tensors.logits = TEE_Malloc(output_size, 0);
-    act_tensors.probs = TEE_Malloc(output_size, 0);
-	if (!act_tensors.logits || !act_tensors.probs) {
-		EMSG("Out of memory");
-		return TEE_ERROR_OUT_OF_MEMORY;
-	}
-	// 计算
+	// 为logits分配临时空间
+	size_t temp_size = B * T * V * sizeof(float);
+	if (act_tensors.logits) TEE_Free(act_tensors.logits);
+    act_tensors.logits = TEE_Malloc(temp_size, 0);
+    if(!act_tensors.logits){
+        EMSG("Out of memory");
+        return TEE_ERROR_OUT_OF_MEMORY;
+    }
+
+	// 计算matmul得到logits
 	matmul_forward_TA(act_tensors.logits, inputs, param_tensors.wte, NULL, B, T, C, V);
-	softmax_forward_TA(act_tensors.probs, act_tensors.logits, B, T, V);
-	return TEE_SUCCESS;
-}
-
-/**
- * @brief 获取Softmax输出
- */
-static TEE_Result softmax_output_TA(uint32_t param_types, TEE_Param params[4])
-{
-	uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_OUTPUT,
-						   TEE_PARAM_TYPE_NONE,
-						   TEE_PARAM_TYPE_NONE,
-						   TEE_PARAM_TYPE_NONE);
 	
-	DMSG("has been called");
-
-	if (param_types != exp_param_types)
-		return TEE_ERROR_BAD_PARAMETERS;
-	// 输出act_tensors.probs到输出缓冲区
-	float *buffer = (float*)params[0].memref.buffer;
-	size_t buffer_size = params[0].memref.size;
-	TEE_MemMove(buffer, act_tensors.probs, buffer_size);
+	// 计算softmax得到概率
+	softmax_forward_TA(output, act_tensors.logits, B, T, V);
+	
 	return TEE_SUCCESS;
 }
 
@@ -341,33 +296,17 @@ static TEE_Result softmax_output_TA(uint32_t param_types, TEE_Param params[4])
  */
 static TEE_Result layernorm_forward_TA(uint32_t param_types, TEE_Param params[4])
 {
-    uint32_t exp = TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_INPUT, TEE_PARAM_TYPE_VALUE_INPUT,
-                                   TEE_PARAM_TYPE_VALUE_INPUT, TEE_PARAM_TYPE_NONE);
+    uint32_t exp = TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_INPUT, TEE_PARAM_TYPE_MEMREF_OUTPUT,
+                                   TEE_PARAM_TYPE_VALUE_INPUT, TEE_PARAM_TYPE_VALUE_INPUT);
     if (param_types != exp) return TEE_ERROR_BAD_PARAMETERS;
 
     float* inp = (float*)params[0].memref.buffer;
-    int B = params[1].value.a;
-    int T = params[1].value.b;
-    int C = params[2].value.a;
+    float* out = (float*)params[1].memref.buffer;
+    int B = params[2].value.a;
+    int T = params[2].value.b;
+    int C = params[3].value.a;
 
-    size_t out_size = B * T * C * sizeof(float);
-    if (act_tensors.lnf) { TEE_Free(act_tensors.lnf); act_tensors.lnf = NULL; }
-    act_tensors.lnf = TEE_Malloc(out_size, 0);
-    if (!act_tensors.lnf) return TEE_ERROR_OUT_OF_MEMORY;
-
-    layernorm_forward_TA_impl(act_tensors.lnf, inp, param_tensors.lnfw, param_tensors.lnfb, B, T, C);
-    return TEE_SUCCESS;
-}
-
-/**
- * @brief 返回LayerNorm输出
- */
-static TEE_Result layernorm_output_TA(uint32_t param_types, TEE_Param params[4])
-{
-    if (param_types != TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_OUTPUT, TEE_PARAM_TYPE_NONE, TEE_PARAM_TYPE_NONE, TEE_PARAM_TYPE_NONE))
-        return TEE_ERROR_BAD_PARAMETERS;
-    
-    TEE_MemMove(params[0].memref.buffer, act_tensors.lnf, params[0].memref.size);
+    layernorm_forward_TA_impl(out, inp, param_tensors.lnfw, param_tensors.lnfb, B, T, C);
     return TEE_SUCCESS;
 }
 
@@ -381,18 +320,12 @@ TEE_Result TA_InvokeCommandEntryPoint(void __unused *sess_ctx,
 		return load_parameters_TA(param_types, params);
 	case TA_GPT_CMD_ENCODER_FORWARD:
 		return encoder_forward_TA(param_types, params);
-	case TA_GPT_CMD_ENCODER_OUTPUT:
-		return encoder_output_TA(param_types, params);
 	case TA_GPT_CMD_SOFTMAX_FORWARD:
 		return matmul_softmax_forward_TA(param_types, params);
-	case TA_GPT_CMD_SOFTMAX_OUTPUT:
-		return softmax_output_TA(param_types, params);
 	case TA_GPT_CMD_LOAD_LNFWB:
 		return load_lnfwb_TA(param_types, params);
 	case TA_GPT_CMD_LAYERNORM_FORWARD:
 		return layernorm_forward_TA(param_types, params);
-	case TA_GPT_CMD_LAYERNORM_OUTPUT:
-		return layernorm_output_TA(param_types, params);
 	default:
 		return TEE_ERROR_BAD_PARAMETERS;
 	}
